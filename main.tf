@@ -16,6 +16,7 @@ module "VPCs" {
   subnets            = var.subnets
   ingress_ports_list = var.ingress_ports_list
   sg_ingress_cidr    = var.sg_ingress_cidr
+  tags = var.tags
 }
 
 

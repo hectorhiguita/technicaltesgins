@@ -1,3 +1,7 @@
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
 resource "aws_vpc" "vpc_virginia" {
   cidr_block = var.vpc_variables["CIDR"]
   tags = {
@@ -13,9 +17,10 @@ resource "aws_vpc" "vpc_virginia" {
 }
 
 resource "aws_subnet" "public_subnet" {
-  count                  = 2
+  count                   = 2
   vpc_id                  = aws_vpc.vpc_virginia.id
-  cidr_block              = var.subnets[count.index - 1]
+  cidr_block              = var.subnets[count.index]
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
   tags = {
     "Name" = "public_subnet-${count.index}"
@@ -23,9 +28,10 @@ resource "aws_subnet" "public_subnet" {
 }
 
 resource "aws_subnet" "private_subnet" {
-  count      = 2
-  vpc_id     = aws_vpc.vpc_virginia.id
-  cidr_block = var.subnets[count.index + 2]
+  count             = 2
+  vpc_id            = aws_vpc.vpc_virginia.id
+  cidr_block        = var.subnets[count.index + 2]
+  availability_zone = data.aws_availability_zones.available.names[count.index]
   tags = {
     "Name" = "private_subnet-${count.index}"
   }
@@ -57,8 +63,48 @@ resource "aws_route_table" "public_crt" {
 }
 
 resource "aws_route_table_association" "crta_public_subnet" {
-  subnet_id      = aws_subnet.public_subnet.id
+  count = 2
+  subnet_id      = aws_subnet.public_subnet[count.index].id
   route_table_id = aws_route_table.public_crt.id
+}
+
+# NAT Gateway and Elastic IP
+resource "aws_eip" "nat_eip" {
+  domain = "vpc"
+  tags = {
+    Name = "NAT Gateway EIP"
+  }
+  depends_on = [aws_internet_gateway.igw]
+}
+
+resource "aws_nat_gateway" "nat_gw" {
+  allocation_id = aws_eip.nat_eip.id
+  subnet_id     = aws_subnet.public_subnet[0].id
+  tags = {
+    Name = "NAT Gateway"
+  }
+  depends_on = [aws_internet_gateway.igw]
+}
+
+# Private Route Table
+resource "aws_route_table" "private_crt" {
+  vpc_id = aws_vpc.vpc_virginia.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat_gw.id
+  }
+
+  tags = {
+    Name = "private crt"
+  }
+}
+
+# Private Route Table Associations
+resource "aws_route_table_association" "crta_private_subnet" {
+  count = 2
+  subnet_id      = aws_subnet.private_subnet[count.index].id
+  route_table_id = aws_route_table.private_crt.id
 }
 
 resource "aws_security_group" "sg_public_instance" {
