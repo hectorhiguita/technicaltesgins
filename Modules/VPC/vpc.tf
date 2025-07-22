@@ -47,7 +47,7 @@ resource "aws_route_table" "public_crt" {
   vpc_id = aws_vpc.vpc_virginia.id
 
   route {
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.sg_ingress_cidr
     gateway_id = aws_internet_gateway.igw.id
   }
 
