@@ -10,8 +10,8 @@ variable "vpc_variables" {
 }
 
 variable "subnets" {
-  description = "List of subnet CIDR blocks (4 subnets: 2 public, 2 private)"
-  type        = list(string)
+  description = "Map of subnet names to CIDR blocks (must contain 'public' or 'private' in the key name)"
+  type        = map(string)
   
   validation {
     condition = length(var.subnets) == 4

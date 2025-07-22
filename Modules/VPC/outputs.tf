@@ -10,12 +10,12 @@ output "vpc_cidr" {
 
 output "public_subnet_ids" {
   description = "IDs of the public subnets"
-  value       = aws_subnet.public_subnet[*].id
+  value       = { for k, v in aws_subnet.public_subnet : k => v.id }
 }
 
 output "private_subnet_ids" {
   description = "IDs of the private subnets"
-  value       = aws_subnet.private_subnet[*].id
+  value       = { for k, v in aws_subnet.private_subnet : k => v.id }
 }
 
 output "internet_gateway_id" {

@@ -10,12 +10,12 @@ variable "vpc_variables" {
 }
 
 variable "subnets" {
-  description = "List of subnet CIDR blocks"
-  type        = list(string)
+  description = "Map of subnet names to CIDR blocks"
+  type        = map(string)
   
   validation {
-    condition = length(var.subnets) == 4
-    error_message = "Exactly 4 subnets must be provided (2 public, 2 private)."
+    condition = length(var.subnets) >= 2
+    error_message = "At least 2 subnets must be provided."
   }
 }
 
