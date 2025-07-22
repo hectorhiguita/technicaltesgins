@@ -90,14 +90,14 @@ resource "aws_security_group" "sg_public_instance" {
 }
 
 
-module "mybucket" {
-  source      = "./modulos/s3"
-  bucket_name = "nombreunico1234567"
-
-}
-output "s3_arn" {
-  value = module.mybucket.s3_bucket_arn
-}
+#module "mybucket" {
+#  source      = "./modulos/s3"
+#  bucket_name = "nombreunico1234567"
+#
+#}
+#output "s3_arn" {
+#  value = module.mybucket.s3_bucket_arn
+#}
 
 # module "terraform_state_backend" {
 #   source      = "cloudposse/tfstate-backend/aws"
