@@ -1,0 +1,79 @@
+name: Terraform AWS IaC
+
+# Se ejecuta el workflow cuando se haga un push a la rama 'main'
+# o cuando se cree un Pull Request a la rama 'main'.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  terraform_apply:
+    name: "Terraform Apply"
+    runs-on: ubuntu-latest # Ejecuta el job en una máquina virtual Ubuntu
+
+    # Define variables de entorno específicas para este job
+    env:
+      TF_ROOT: ${{ github.workspace }}/terraform # Ruta a tus archivos Terraform
+      # Estas variables se inyectan directamente desde los GitHub Secrets
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+      TF_STATE_BUCKET_NAME: ${{ secrets.TF_STATE_BUCKET_NAME }}
+      TF_STATE_KEY_PREFIX: ${{ secrets.TF_STATE_KEY_PREFIX }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4 # Clona el repositorio para que el workflow acceda a los archivos
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.x.x # Especifica la versión de Terraform (ej. 1.5.7)
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Terraform Init
+        id: init
+        run: |
+          cd ${{ env.TF_ROOT }}
+          terraform init \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET_NAME }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.ref_name }}.tfstate" \
+            -backend-config="region=${{ env.AWS_DEFAULT_REGION }}"
+        env:
+          TF_VAR_aws_region: ${{ env.AWS_DEFAULT_REGION }} # Pasar la región como TF_VAR (opcional, si la usas en tus .tf)
+
+      - name: Terraform Validate
+        id: validate
+        run: |
+          cd ${{ env.TF_ROOT }}
+          terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd ${{ env.TF_ROOT }}
+          terraform plan -no-color -out=tfplan
+        env:
+          TF_VAR_aws_region: ${{ env.AWS_DEFAULT_REGION }}
+          # Puedes añadir más variables de Terraform aquí si las necesitas
+          # TF_VAR_my_variable: "my_value"
+
+      # Solo se ejecuta el 'apply' si el evento es un 'push' a la rama 'main'
+      # Para Pull Requests, solo se ejecuta el 'plan' para revisión
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          cd ${{ env.TF_ROOT }}
+          terraform apply -auto-approve tfplan
+        env:
+          TF_VAR_aws_region: ${{ env.AWS_DEFAULT_REGION }}
