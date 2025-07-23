@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Terraform
+*.tf
+*.tfvars
+*.tfstate*
+.terraform/
+.terraform.lock.hcl
+
+# GitHub Actions
+.github/
+
+# Documentation
+README.md
+*.md
+
+# Scripts
+deploy-to-ecr.sh
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp

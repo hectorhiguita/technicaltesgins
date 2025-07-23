@@ -22,7 +22,6 @@ variable "subnets" {
 variable "ingress_ports_list" {
   description = "List of ingress ports for security group"
   type        = list(number)
-  default     = [80, 443, 22]
 }
 
 variable "sg_ingress_cidr" {
@@ -40,4 +39,14 @@ variable "tags" {
   description = "Common tags to apply to all resources"
   type        = map(string)
   default     = {}
+}
+
+variable "ECS_Name" {
+  description = "value for ECS cluster name"
+  type        = string
+}
+
+variable "ECR_Name" {
+  description = "value for ECR repository name"
+  type        = string
 }

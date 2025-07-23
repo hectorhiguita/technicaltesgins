@@ -32,3 +32,26 @@ module "terraform_state_backend" {
      terraform_backend_config_file_name = "backend.tf"
      force_destroy                      = false
    }
+
+module "ECS" {
+  source = "./Modules/ECS"
+  ECS_Name           = var.ECS_Name
+  private_subnet_ids = values(module.VPCs.private_subnet_ids)
+  vpc_id             = module.VPCs.vpc_id
+  security_group_ids = [module.VPCs.public_security_group_id]
+}
+
+module "ECR" {
+  source = "./Modules/ECR"
+  ECR_Name = var.ECR_Name
+}
+
+module "Amrize_Testing_LB" {
+  source = "./Modules/APP_Load_Balancer"
+  
+  tags                = var.tags
+  vpc_id              = module.VPCs.vpc_id
+  public_subnet_ids   = values(module.VPCs.public_subnet_ids)
+  security_group_ids  = [module.VPCs.public_security_group_id]
+  target_group_arn    = module.ECS.target_group_arn
+}

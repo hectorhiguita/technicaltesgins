@@ -1,4 +1,4 @@
-name: Terraform AWS IaC
+name: Complete Infrastructure and Application Deployment
 
 # Se ejecuta el workflow cuando se haga un push a la rama 'main'
 # o cuando se cree un Pull Request a la rama 'main'.
@@ -10,29 +10,79 @@ on:
     branches:
       - main
 
-jobs:
-  terraform_apply:
-    name: "Terraform Apply"
-    runs-on: ubuntu-latest # Ejecuta el job en una máquina virtual Ubuntu
+env:
+  AWS_DEFAULT_REGION: us-east-1
+  ECR_REPOSITORY: amrize-ecr-repo
+  IMAGE_TAG: ${{ github.sha }}
 
-    # Define variables de entorno específicas para este job
+jobs:
+  # Job 1: Build and Push Docker Image to ECR
+  docker_build_push:
+    name: "Build & Push Docker Image"
+    runs-on: ubuntu-latest
+    
+    outputs:
+      image_uri: ${{ steps.build-image.outputs.image }}
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          # Build Docker image
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          
+          # Push image to ECR
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          # Output image URI for use in Terraform
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  # Job 2: Deploy Infrastructure with Terraform
+  terraform_deploy:
+    name: "Terraform Infrastructure Deployment"
+    runs-on: ubuntu-latest
+    needs: docker_build_push  # Wait for Docker image to be built
+    
+    outputs:
+      alb_url: ${{ steps.terraform-output.outputs.alb_url }}
+      ecs_cluster: ${{ steps.terraform-output.outputs.ecs_cluster }}
+      
     env:
-      TF_ROOT: ${{ github.workspace }}/terraform # Ruta a tus archivos Terraform
-      # Estas variables se inyectan directamente desde los GitHub Secrets
+      TF_ROOT: ${{ github.workspace }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION }}
       TF_STATE_BUCKET_NAME: ${{ secrets.TF_STATE_BUCKET_NAME }}
       TF_STATE_KEY_PREFIX: ${{ secrets.TF_STATE_KEY_PREFIX }}
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4 # Clona el repositorio para que el workflow acceda a los archivos
+        uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.x.x # Especifica la versión de Terraform (ej. 1.5.7)
+          terraform_version: 1.x.x
+          terraform_wrapper: false  # Disable wrapper for clean outputs
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -41,39 +91,121 @@ jobs:
           aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
+      - name: Update ECS Task Definition with New Image
+        run: |
+          # Update the ECS module to use the newly built image
+          sed -i 's|image.*=.*".*"|image = "${{ needs.docker_build_push.outputs.image_uri }}"|g' Modules/ECS/ecs.tf
+
       - name: Terraform Init
         id: init
         run: |
-          cd ${{ env.TF_ROOT }}
           terraform init \
             -backend-config="bucket=${{ env.TF_STATE_BUCKET_NAME }}" \
             -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.ref_name }}.tfstate" \
             -backend-config="region=${{ env.AWS_DEFAULT_REGION }}"
-        env:
-          TF_VAR_aws_region: ${{ env.AWS_DEFAULT_REGION }} # Pasar la región como TF_VAR (opcional, si la usas en tus .tf)
 
       - name: Terraform Validate
         id: validate
-        run: |
-          cd ${{ env.TF_ROOT }}
-          terraform validate -no-color
+        run: terraform validate -no-color
 
       - name: Terraform Plan
         id: plan
         run: |
-          cd ${{ env.TF_ROOT }}
           terraform plan -no-color -out=tfplan
-        env:
-          TF_VAR_aws_region: ${{ env.AWS_DEFAULT_REGION }}
-          # Puedes añadir más variables de Terraform aquí si las necesitas
-          # TF_VAR_my_variable: "my_value"
+          
+      - name: Save Terraform Plan Output
+        if: github.event_name == 'pull_request'
+        run: |
+          terraform show -no-color tfplan > tfplan.txt
+          
+      - name: Comment PR with Terraform Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('tfplan.txt', 'utf8');
+            const maxLength = 65000; // GitHub comment limit
+            const truncatedPlan = plan.length > maxLength ? 
+              plan.substring(0, maxLength) + '\n\n... (truncated)' : plan;
+              
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan Results\n\n\`\`\`\n${truncatedPlan}\n\`\`\``
+            });
 
-      # Solo se ejecuta el 'apply' si el evento es un 'push' a la rama 'main'
-      # Para Pull Requests, solo se ejecuta el 'plan' para revisión
       - name: Terraform Apply
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Terraform Outputs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: terraform-output
         run: |
-          cd ${{ env.TF_ROOT }}
-          terraform apply -auto-approve tfplan
-        env:
-          TF_VAR_aws_region: ${{ env.AWS_DEFAULT_REGION }}
+          echo "alb_url=$(terraform output -raw alb_url)" >> $GITHUB_OUTPUT
+          echo "ecs_cluster=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
+
+  # Job 3: Update ECS Service (Force new deployment)
+  ecs_update:
+    name: "Update ECS Service"
+    runs-on: ubuntu-latest
+    needs: [docker_build_push, terraform_deploy]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Force ECS Service Update
+        run: |
+          aws ecs update-service \
+            --cluster amrize-ecs-cluster \
+            --service apache-service \
+            --force-new-deployment
+
+      - name: Wait for Service Stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster amrize-ecs-cluster \
+            --services apache-service
+
+  # Job 4: Post-Deployment Verification
+  verify_deployment:
+    name: "Verify Deployment"
+    runs-on: ubuntu-latest
+    needs: [terraform_deploy, ecs_update]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Test Application Endpoint
+        run: |
+          ALB_URL="${{ needs.terraform_deploy.outputs.alb_url }}"
+          echo "Testing application at: $ALB_URL"
+          
+          # Wait for ALB to be ready
+          for i in {1..30}; do
+            if curl -f -s "$ALB_URL" > /dev/null; then
+              echo "✅ Application is responding successfully!"
+              break
+            else
+              echo "⏳ Waiting for application to be ready... (attempt $i/30)"
+              sleep 10
+            fi
+          done
+          
+          # Final test with output
+          curl -f "$ALB_URL" || exit 1
+
+      - name: Deployment Summary
+        run: |
+          echo "🚀 Deployment Summary:"
+          echo "- Image: ${{ needs.docker_build_push.outputs.image_uri }}"
+          echo "- ALB URL: ${{ needs.terraform_deploy.outputs.alb_url }}"
+          echo "- ECS Cluster: ${{ needs.terraform_deploy.outputs.ecs_cluster }}"
+          echo "✅ Deployment completed successfully!"
