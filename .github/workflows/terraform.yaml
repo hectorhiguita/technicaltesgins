@@ -17,7 +17,7 @@ env:
 jobs:
   # Job 1: Build and Push Docker Image to ECR
   docker_build_push:
-    name: "🚀 Build & Deploy Docker Image"
+    name: " Build & Deploy Docker Image"
     runs-on: ubuntu-latest
     
     outputs:
@@ -25,21 +25,21 @@ jobs:
       image_tag: ${{ steps.build-image.outputs.tag }}
       
     steps:
-      - name: 📥 Checkout Repository
+      - name:  Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 🔐 Configure AWS Credentials
+      - name:  Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
-      - name: 🔐 Login to Amazon ECR
+      - name:  Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: 📋 Get ECR Repository Info
+      - name:  Get ECR Repository Info
         id: ecr-info
         run: |
           ECR_URI=$(aws ecr describe-repositories \
@@ -47,18 +47,18 @@ jobs:
             --region ${{ env.AWS_DEFAULT_REGION }} \
             --query 'repositories[0].repositoryUri' \
             --output text)
-          echo "📦 ECR Repository URI: $ECR_URI"
+          echo " ECR Repository URI: $ECR_URI"
           echo "ecr_uri=$ECR_URI" >> $GITHUB_OUTPUT
 
-      - name: 🔨 Build, Tag & Push Docker Image with Updated HTML
+      - name:  Build, Tag & Push Docker Image with Updated HTML
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
-          echo "🏗️ Building Docker image with updated HTML content..."
-          echo "📄 HTML content will be copied from ./public-html/ to container"
+          echo " Building Docker image with updated HTML content..."
+          echo " HTML content will be copied from ./public-html/ to container"
           
           # Build image with commit SHA tag
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
@@ -72,43 +72,43 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           
-          echo "✅ Images pushed successfully!"
-          echo "🌐 Image URI: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo " Images pushed successfully!"
+          echo " Image URI: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           
           # Set outputs
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
           echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: 🧹 Cleanup Local Images
+      - name:  Cleanup Local Images
         run: |
-          echo "🗑️ Cleaning up local Docker images..."
+          echo " Cleaning up local Docker images..."
           docker rmi $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG || true
           docker rmi $ECR_REGISTRY/$ECR_REPOSITORY:latest || true
           docker system prune -f
 
   # Job 2: Update ECS Service with New Image
   ecs_update:
-    name: "🔄 Update ECS Service"
+    name: " Update ECS Service"
     runs-on: ubuntu-latest
     needs: docker_build_push
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     steps:
-      - name: 🔐 Configure AWS Credentials
+      - name:  Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
-      - name: 🛠️ Install jq
+      - name:  Install jq
         run: |
-          echo "📦 Installing jq for JSON manipulation..."
+          echo " Installing jq for JSON manipulation..."
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: 📋 Check Current ECS Service Status
+      - name:  Check Current ECS Service Status
         run: |
-          echo "🔍 Checking current ECS service status..."
+          echo " Checking current ECS service status..."
           aws ecs describe-services \
             --cluster cluster-backend-holcim-images \
             --services ui \
@@ -117,7 +117,7 @@ jobs:
 
       - name: � Create New Task Definition with Updated Image
         run: |
-          echo "📝 Creating new task definition with image: ${{ needs.docker_build_push.outputs.image_uri }}"
+          echo " Creating new task definition with image: ${{ needs.docker_build_push.outputs.image_uri }}"
           
           # Get current task definition
           CURRENT_TASK_DEF=$(aws ecs describe-services \
@@ -148,12 +148,12 @@ jobs:
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
           
-          echo "✅ New task definition created: $NEW_TASK_ARN"
+          echo " New task definition created: $NEW_TASK_ARN"
           echo "NEW_TASK_ARN=$NEW_TASK_ARN" >> $GITHUB_ENV
 
-      - name: 🔄 Update ECS Service with New Task Definition
+      - name:  Update ECS Service with New Task Definition
         run: |
-          echo "🚀 Updating ECS service with new task definition: $NEW_TASK_ARN"
+          echo " Updating ECS service with new task definition: $NEW_TASK_ARN"
           
           # Update service with new task definition
           aws ecs update-service \
@@ -162,114 +162,22 @@ jobs:
             --task-definition "$NEW_TASK_ARN" \
             --force-new-deployment
 
-      - name: ⏳ Wait for Service Stability
+      - name:  Wait for Service Stability
         run: |
-          echo "⏳ Waiting for ECS service to stabilize with new image..."
+          echo " Waiting for ECS service to stabilize with new image..."
           aws ecs wait services-stable \
             --cluster cluster-backend-holcim-images \
             --services ui \
-            --cli-read-timeout 600 \
+            --cli-read-timeout 90 \
             --cli-connect-timeout 60
 
-      - name: ✅ Verify Service Update
+      - name:  Verify Service Update
         run: |
-          echo "✅ Verifying service deployment..."
+          echo " Verifying service deployment..."
           aws ecs describe-services \
             --cluster cluster-backend-holcim-images \
             --services ui \
             --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition}' \
             --output table
 
-  # Job 3: Verify Application is Running
-  verify_deployment:
-    name: "✅ Verify Application"
-    runs-on: ubuntu-latest
-    needs: [docker_build_push, ecs_update]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: 🔐 Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_DEFAULT_REGION }}
-
-      - name: 🌐 Get Service URL and Test Application
-        run: |
-          echo "🔍 Getting ECS service endpoint..."
-          
-          # Get target group ARN from service
-          TG_ARN=$(aws ecs describe-services \
-            --cluster cluster-backend-holcim-images \
-            --services ui \
-            --query 'services[0].loadBalancers[0].targetGroupArn' \
-            --output text)
-          
-          if [ "$TG_ARN" != "None" ] && [ -n "$TG_ARN" ]; then
-            echo "🎯 Target Group: $TG_ARN"
-            
-            # Get load balancer from target group
-            LB_ARN=$(aws elbv2 describe-target-groups \
-              --target-group-arns "$TG_ARN" \
-              --query 'TargetGroups[0].LoadBalancerArns[0]' \
-              --output text 2>/dev/null || echo "")
-            
-            if [ -n "$LB_ARN" ] && [ "$LB_ARN" != "None" ]; then
-              # Get ALB DNS name
-              ALB_DNS=$(aws elbv2 describe-load-balancers \
-                --load-balancer-arns "$LB_ARN" \
-                --query 'LoadBalancers[0].DNSName' \
-                --output text 2>/dev/null || echo "")
-              
-              if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
-                ALB_URL="http://$ALB_DNS"
-                echo "🌐 Testing application at: $ALB_URL"
-                
-                # Test endpoint with retries
-                max_attempts=10
-                attempt=0
-                
-                while [ $attempt -lt $max_attempts ]; do
-                  attempt=$((attempt + 1))
-                  echo "🔄 Testing endpoint (attempt $attempt/$max_attempts)..."
-                  
-                  if curl -f -s "$ALB_URL" > /dev/null; then
-                    echo "✅ Application is responding successfully!"
-                    echo "📄 Application content:"
-                    curl -s "$ALB_URL" | head -10
-                    break
-                  else
-                    echo "⏳ Waiting for application to be ready..."
-                    sleep 15
-                  fi
-                done
-              else
-                echo "⚠️ Load balancer DNS not found"
-              fi
-            else
-              echo "⚠️ Load balancer not found for target group"
-            fi
-          else
-            echo "⚠️ No load balancer configured for this service"
-            echo "✅ Checking ECS service health instead..."
-            aws ecs describe-services \
-              --cluster cluster-backend-holcim-images \
-              --services ui \
-              --query 'services[0].{Status:status,HealthyTargets:runningCount,DesiredCount:desiredCount}' \
-              --output table
-          fi
-
-      - name: 🎉 Deployment Summary
-        run: |
-          echo "════════════════════════════════════════"
-          echo "🎉 DEPLOYMENT COMPLETED SUCCESSFULLY! 🎉"
-          echo "════════════════════════════════════════"
-          echo ""
-          echo "📦 Deployed Image: ${{ needs.docker_build_push.outputs.image_uri }}"
-          echo "🏷️ Image Tag: ${{ needs.docker_build_push.outputs.image_tag }}"
-          echo "🔄 ECS Service: ui updated"
-          echo "🏗️ ECS Cluster: cluster-backend-holcim-images"
-          echo ""
-          echo "✅ Updated HTML content deployed to production!"
-          echo "🚀 Application is ready to serve traffic!"
+ 
