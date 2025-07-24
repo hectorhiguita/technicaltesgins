@@ -6,6 +6,8 @@
 set -e
 
 # Variables
+aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 AWS_REGION="us-east-1"
 ECR_REPOSITORY="amrize-ecr-repo"
 IMAGE_TAG="latest"
