@@ -18,6 +18,13 @@ crash.*.log
 override.tf
 override.tf.json
 *_override.tf
+
+# AWS credentials and temporary files
+.aws/
+aws-credentials.txt
+configure-aws-credentials.sh
+main-simple.tf
+troubleshoot.sh
 *_override.tf.json
 
 # Ignore CLI configuration files

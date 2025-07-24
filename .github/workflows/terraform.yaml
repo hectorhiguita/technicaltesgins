@@ -18,48 +18,79 @@ env:
 jobs:
   # Job 1: Build and Push Docker Image to ECR
   docker_build_push:
-    name: "Build & Push Docker Image"
+    name: "🚀 Build & Push Docker Image to ECR"
     runs-on: ubuntu-latest
     
     outputs:
       image_uri: ${{ steps.build-image.outputs.image }}
+      image_tag: ${{ steps.build-image.outputs.tag }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
       
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
+      - name: 🔧 Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
-      - name: Login to Amazon ECR
+      - name: 🔐 Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to Amazon ECR
+      - name: 📋 Get ECR Repository Info
+        id: ecr-info
+        run: |
+          # Verificar que el repositorio ECR existe
+          ECR_URI=$(aws ecr describe-repositories \
+            --repository-names ${{ env.ECR_REPOSITORY }} \
+            --region ${{ env.AWS_DEFAULT_REGION }} \
+            --query 'repositories[0].repositoryUri' \
+            --output text)
+          echo "📦 ECR Repository URI: $ECR_URI"
+          echo "ecr_uri=$ECR_URI" >> $GITHUB_OUTPUT
+
+      - name: 🔨 Build, Tag & Push Docker Image
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
-          # Build Docker image
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          echo "🏗️ Building Docker image..."
           
-          # Push image to ECR
+          # Build image with commit SHA tag
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          
+          # Tag as latest
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          echo "⬆️ Pushing images to ECR..."
+          
+          # Push both tags
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           
-          # Output image URI for use in Terraform
+          echo "✅ Images pushed successfully!"
+          echo "🌐 Image URI: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          
+          # Set outputs
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: 🧹 Cleanup Local Images
+        run: |
+          echo "🗑️ Cleaning up local Docker images..."
+          docker rmi $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG || true
+          docker rmi $ECR_REGISTRY/$ECR_REPOSITORY:latest || true
+          docker system prune -f
 
   # Job 2: Deploy Infrastructure with Terraform
   terraform_deploy:
-    name: "Terraform Infrastructure Deployment"
+    name: "🏗️ Terraform Infrastructure Deployment"
     runs-on: ubuntu-latest
     needs: docker_build_push  # Wait for Docker image to be built
     
@@ -75,50 +106,64 @@ jobs:
       TF_STATE_KEY_PREFIX: ${{ secrets.TF_STATE_KEY_PREFIX }}
 
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Terraform
+      - name: 🔧 Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.x.x
           terraform_wrapper: false  # Disable wrapper for clean outputs
 
-      - name: Configure AWS Credentials
+      - name: 🔐 Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
-      - name: Update ECS Task Definition with New Image
+      - name: 🔄 Update ECS Task Definition with New Image
         run: |
-          # Update the ECS module to use the newly built image
-          sed -i 's|image.*=.*".*"|image = "${{ needs.docker_build_push.outputs.image_uri }}"|g' Modules/ECS/ecs.tf
+          echo "🖼️ Updating ECS task definition with new image..."
+          echo "New image URI: ${{ needs.docker_build_push.outputs.image_uri }}"
+          
+          # Create backup of current ecs.tf
+          cp Modules/ECS/ecs.tf Modules/ECS/ecs.tf.backup
+          
+          # Update the image in ecs.tf with the newly built image
+          sed -i 's|image[[:space:]]*=[[:space:]]*"[^"]*"|image = "${{ needs.docker_build_push.outputs.image_uri }}"|g' Modules/ECS/ecs.tf
+          
+          # Verify the change
+          echo "📋 Checking updated image configuration:"
+          grep -n "image.*=" Modules/ECS/ecs.tf || echo "No image configuration found"
 
-      - name: Terraform Init
+      - name: 🔄 Terraform Init
         id: init
         run: |
+          echo "🚀 Initializing Terraform..."
           terraform init \
             -backend-config="bucket=${{ env.TF_STATE_BUCKET_NAME }}" \
             -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.ref_name }}.tfstate" \
             -backend-config="region=${{ env.AWS_DEFAULT_REGION }}"
 
-      - name: Terraform Validate
+      - name: ✅ Terraform Validate
         id: validate
-        run: terraform validate -no-color
+        run: |
+          echo "🔍 Validating Terraform configuration..."
+          terraform validate -no-color
 
-      - name: Terraform Plan
+      - name: 📋 Terraform Plan
         id: plan
         run: |
+          echo "📊 Creating Terraform execution plan..."
           terraform plan -no-color -out=tfplan
           
-      - name: Save Terraform Plan Output
+      - name: 💾 Save Terraform Plan Output
         if: github.event_name == 'pull_request'
         run: |
           terraform show -no-color tfplan > tfplan.txt
           
-      - name: Comment PR with Terraform Plan
+      - name: 📝 Comment PR with Terraform Plan
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -133,79 +178,280 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Terraform Plan Results\n\n\`\`\`\n${truncatedPlan}\n\`\`\``
+              body: `## 🏗️ Terraform Plan Results\n\n**New Docker Image:** \`${{ needs.docker_build_push.outputs.image_uri }}\`\n\n\`\`\`hcl\n${truncatedPlan}\n\`\`\``
             });
 
-      - name: Terraform Apply
+      - name: 🚀 Terraform Apply
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: terraform apply -auto-approve tfplan
+        run: |
+          echo "🏗️ Applying Terraform changes..."
+          terraform apply -auto-approve tfplan
 
-      - name: Get Terraform Outputs
+      - name: 📊 Get Terraform Outputs
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: terraform-output
         run: |
-          echo "alb_url=$(terraform output -raw alb_url)" >> $GITHUB_OUTPUT
-          echo "ecs_cluster=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
+          echo "📋 Retrieving Terraform outputs..."
+          ALB_URL=$(terraform output -raw alb_url)
+          ECS_CLUSTER=$(terraform output -raw ecs_cluster_name)
+          
+          echo "🌐 ALB URL: $ALB_URL"
+          echo "🏗️ ECS Cluster: $ECS_CLUSTER"
+          
+          echo "alb_url=$ALB_URL" >> $GITHUB_OUTPUT
+          echo "ecs_cluster=$ECS_CLUSTER" >> $GITHUB_OUTPUT
 
   # Job 3: Update ECS Service (Force new deployment)
   ecs_update:
-    name: "Update ECS Service"
+    name: "🔄 Update ECS Service"
     runs-on: ubuntu-latest
     needs: [docker_build_push, terraform_deploy]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     steps:
-      - name: Configure AWS Credentials
+      - name: 🔐 Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
-      - name: Force ECS Service Update
+      - name: 📋 Check ECS Service Status
         run: |
+          echo "🔍 Checking current ECS service status..."
+          aws ecs describe-services \
+            --cluster amrize-ecs-cluster \
+            --services apache-service \
+            --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount}' \
+            --output table
+
+      - name: 🔄 Force ECS Service Update
+        run: |
+          echo "🚀 Forcing new deployment with image: ${{ needs.docker_build_push.outputs.image_uri }}"
           aws ecs update-service \
             --cluster amrize-ecs-cluster \
             --service apache-service \
             --force-new-deployment
 
-      - name: Wait for Service Stability
+      - name: ⏳ Wait for Service Stability
         run: |
+          echo "⏳ Waiting for ECS service to stabilize..."
           aws ecs wait services-stable \
             --cluster amrize-ecs-cluster \
-            --services apache-service
+            --services apache-service \
+            --cli-read-timeout 900 \
+            --cli-connect-timeout 60
+
+      - name: ✅ Verify Service Update
+        run: |
+          echo "✅ Verifying service deployment..."
+          aws ecs describe-services \
+            --cluster amrize-ecs-cluster \
+            --services apache-service \
+            --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition}' \
+            --output table
 
   # Job 4: Post-Deployment Verification
   verify_deployment:
-    name: "Verify Deployment"
+    name: "✅ Verify Deployment"
     runs-on: ubuntu-latest
-    needs: [terraform_deploy, ecs_update]
+    needs: [docker_build_push, terraform_deploy, ecs_update]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     steps:
-      - name: Test Application Endpoint
+      - name: 🌐 Test Application Endpoint
         run: |
           ALB_URL="${{ needs.terraform_deploy.outputs.alb_url }}"
-          echo "Testing application at: $ALB_URL"
+          echo "🔍 Testing application at: $ALB_URL"
           
-          # Wait for ALB to be ready
-          for i in {1..30}; do
-            if curl -f -s "$ALB_URL" > /dev/null; then
-              echo "✅ Application is responding successfully!"
+          # Function to test endpoint
+          test_endpoint() {
+            local url=$1
+            local response=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "000")
+            echo "$response"
+          }
+          
+          # Wait for ALB to be ready with exponential backoff
+          max_attempts=30
+          attempt=0
+          sleep_time=10
+          
+          while [ $attempt -lt $max_attempts ]; do
+            attempt=$((attempt + 1))
+            
+            echo "🔄 Testing endpoint (attempt $attempt/$max_attempts)..."
+            
+            response_code=$(test_endpoint "$ALB_URL")
+            
+            if [ "$response_code" = "200" ]; then
+              echo "✅ Application is responding successfully! (HTTP $response_code)"
+              
+              # Get actual content to verify
+              echo "📄 Application response:"
+              curl -s "$ALB_URL" | head -10
               break
+              
+            elif [ "$response_code" = "000" ]; then
+              echo "⚠️ Connection failed (attempt $attempt/$max_attempts)"
             else
-              echo "⏳ Waiting for application to be ready... (attempt $i/30)"
-              sleep 10
+              echo "⚠️ Received HTTP $response_code (attempt $attempt/$max_attempts)"
+            fi
+            
+            if [ $attempt -lt $max_attempts ]; then
+              echo "⏳ Waiting ${sleep_time}s before next attempt..."
+              sleep $sleep_time
+              
+              # Exponential backoff (but cap at 60s)
+              if [ $sleep_time -lt 60 ]; then
+                sleep_time=$((sleep_time + 5))
+              fi
             fi
           done
           
-          # Final test with output
-          curl -f "$ALB_URL" || exit 1
+          # Final verification
+          echo "🔍 Final endpoint test..."
+          final_response=$(test_endpoint "$ALB_URL")
+          
+          if [ "$final_response" = "200" ]; then
+            echo "✅ Final test passed!"
+          else
+            echo "❌ Final test failed with HTTP code: $final_response"
+            echo "🔍 Debugging information:"
+            curl -v "$ALB_URL" || true
+            exit 1
+          fi
 
-      - name: Deployment Summary
+      - name: 🏥 Health Check Summary
         run: |
-          echo "🚀 Deployment Summary:"
-          echo "- Image: ${{ needs.docker_build_push.outputs.image_uri }}"
-          echo "- ALB URL: ${{ needs.terraform_deploy.outputs.alb_url }}"
-          echo "- ECS Cluster: ${{ needs.terraform_deploy.outputs.ecs_cluster }}"
-          echo "✅ Deployment completed successfully!"
+          echo "🏥 Performing final health checks..."
+          
+          # Check ECS service health
+          echo "📊 ECS Service Status:"
+          aws ecs describe-services \
+            --cluster amrize-ecs-cluster \
+            --services apache-service \
+            --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount}' \
+            --output table
+          
+          # Check ALB target health
+          echo "🎯 ALB Target Health:"
+          TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups \
+            --names amrize-apache-target-group \
+            --query 'TargetGroups[0].TargetGroupArn' \
+            --output text 2>/dev/null || echo "Not found")
+          
+          if [ "$TARGET_GROUP_ARN" != "Not found" ] && [ "$TARGET_GROUP_ARN" != "None" ]; then
+            aws elbv2 describe-target-health \
+              --target-group-arn "$TARGET_GROUP_ARN" \
+              --query 'TargetHealthDescriptions[*].{Target:Target.Id,Port:Target.Port,Health:TargetHealth.State}' \
+              --output table
+          else
+            echo "⚠️ Target group not found or not accessible"
+          fi
+
+      - name: 🚀 Deployment Summary
+        run: |
+          echo "════════════════════════════════════════"
+          echo "🚀 DEPLOYMENT COMPLETED SUCCESSFULLY! 🚀"
+          echo "════════════════════════════════════════"
+          echo ""
+          echo "📦 Deployed Image: ${{ needs.docker_build_push.outputs.image_uri }}"
+          echo "🏷️ Image Tag: ${{ needs.docker_build_push.outputs.image_tag }}"
+          echo "🌐 Application URL: ${{ needs.terraform_deploy.outputs.alb_url }}"
+          echo "🏗️ ECS Cluster: ${{ needs.terraform_deploy.outputs.ecs_cluster }}"
+          echo ""
+          echo "🔗 Quick Links:"
+          echo "• Application: ${{ needs.terraform_deploy.outputs.alb_url }}"
+          echo "• ECR Repository: https://console.aws.amazon.com/ecr/repositories/private/${{ needs.docker_build_push.outputs.ecr_registry }}/${{ env.ECR_REPOSITORY }}"
+          echo "• ECS Service: https://console.aws.amazon.com/ecs/home?region=${{ env.AWS_DEFAULT_REGION }}#/clusters/amrize-ecs-cluster/services"
+          echo ""
+          echo "✅ All systems operational!"
+
+  # Job 5: Cleanup and Error Handling
+  cleanup_on_failure:
+    name: "🧹 Cleanup on Failure"
+    runs-on: ubuntu-latest
+    needs: [docker_build_push, terraform_deploy, ecs_update, verify_deployment]
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: 🔄 Rollback ECS Service
+        if: needs.ecs_update.result == 'failure'
+        run: |
+          echo "🔄 Rolling back ECS service to previous task definition..."
+          
+          # Get current task definition
+          CURRENT_TASK_DEF=$(aws ecs describe-services \
+            --cluster amrize-ecs-cluster \
+            --services apache-service \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          
+          echo "Current task definition: $CURRENT_TASK_DEF"
+          
+          # Get task definition family
+          FAMILY=$(echo $CURRENT_TASK_DEF | sed 's/.*\///g' | sed 's/:.*//')
+          
+          # Get previous revision
+          PREVIOUS_REVISION=$(aws ecs list-task-definitions \
+            --family-prefix $FAMILY \
+            --status ACTIVE \
+            --sort DESC \
+            --query 'taskDefinitionArns[1]' \
+            --output text)
+          
+          if [ "$PREVIOUS_REVISION" != "None" ] && [ "$PREVIOUS_REVISION" != "" ]; then
+            echo "Rolling back to: $PREVIOUS_REVISION"
+            aws ecs update-service \
+              --cluster amrize-ecs-cluster \
+              --service apache-service \
+              --task-definition $PREVIOUS_REVISION
+          else
+            echo "⚠️ No previous task definition found for rollback"
+          fi
+
+      - name: 🗑️ Cleanup Failed Docker Image
+        if: needs.docker_build_push.result == 'failure'
+        run: |
+          echo "🗑️ Cleaning up potentially corrupted ECR image..."
+          
+          # Try to delete the failed image tag
+          aws ecr batch-delete-image \
+            --repository-name ${{ env.ECR_REPOSITORY }} \
+            --image-ids imageTag=${{ env.IMAGE_TAG }} \
+            --region ${{ env.AWS_DEFAULT_REGION }} || true
+
+      - name: 📧 Notify Failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { sha } = context;
+            
+            // Create a deployment status
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: context.runId,
+              state: 'failure',
+              description: 'Deployment failed - automatic rollback initiated',
+              environment: 'production'
+            });
+            
+            // Comment on commit
+            await github.rest.repos.createCommitComment({
+              owner,
+              repo,
+              commit_sha: sha,
+              body: `❌ **Deployment Failed**\n\nThe deployment pipeline failed. Please check the logs and try again.\n\n**Failed Jobs:**\n${JSON.stringify(context.payload, null, 2)}`
+            });

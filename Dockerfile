@@ -1,3 +1,4 @@
+
 # Dockerfile para aplicación web simple
 FROM httpd:2.4-alpine
 
