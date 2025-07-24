@@ -101,31 +101,73 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
+      - name: 🛠️ Install jq
+        run: |
+          echo "📦 Installing jq for JSON manipulation..."
+          sudo apt-get update && sudo apt-get install -y jq
+
       - name: 📋 Check Current ECS Service Status
         run: |
           echo "🔍 Checking current ECS service status..."
           aws ecs describe-services \
-            --cluster amrize-ecs-cluster \
-            --services apache-service \
+            --cluster cluster-backend-holcim-images \
+            --services ui \
             --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,CurrentImage:taskDefinition}' \
             --output table
 
-      - name: 🔄 Force ECS Service Update with New Image
+      - name: � Create New Task Definition with Updated Image
         run: |
-          echo "🚀 Updating ECS service with new image: ${{ needs.docker_build_push.outputs.image_uri }}"
+          echo "📝 Creating new task definition with image: ${{ needs.docker_build_push.outputs.image_uri }}"
           
-          # Force new deployment - this will pull the latest image from ECR
+          # Get current task definition
+          CURRENT_TASK_DEF=$(aws ecs describe-services \
+            --cluster cluster-backend-holcim-images \
+            --services ui \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          
+          echo "Current task definition: $CURRENT_TASK_DEF"
+          
+          # Get task definition details
+          aws ecs describe-task-definition \
+            --task-definition "$CURRENT_TASK_DEF" \
+            --query 'taskDefinition' > current_task_def.json
+          
+          # Update the image in the container definition
+          jq --arg image "${{ needs.docker_build_push.outputs.image_uri }}" \
+             '.containerDefinitions[0].image = $image' \
+             current_task_def.json > updated_task_def.json
+          
+          # Remove fields that shouldn't be in the new task definition
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)' \
+             updated_task_def.json > new_task_def.json
+          
+          # Register new task definition
+          NEW_TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new_task_def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          
+          echo "✅ New task definition created: $NEW_TASK_ARN"
+          echo "NEW_TASK_ARN=$NEW_TASK_ARN" >> $GITHUB_ENV
+
+      - name: 🔄 Update ECS Service with New Task Definition
+        run: |
+          echo "🚀 Updating ECS service with new task definition: $NEW_TASK_ARN"
+          
+          # Update service with new task definition
           aws ecs update-service \
-            --cluster amrize-ecs-cluster \
-            --service apache-service \
+            --cluster cluster-backend-holcim-images \
+            --service ui \
+            --task-definition "$NEW_TASK_ARN" \
             --force-new-deployment
 
       - name: ⏳ Wait for Service Stability
         run: |
           echo "⏳ Waiting for ECS service to stabilize with new image..."
           aws ecs wait services-stable \
-            --cluster amrize-ecs-cluster \
-            --services apache-service \
+            --cluster cluster-backend-holcim-images \
+            --services ui \
             --cli-read-timeout 600 \
             --cli-connect-timeout 60
 
@@ -133,8 +175,8 @@ jobs:
         run: |
           echo "✅ Verifying service deployment..."
           aws ecs describe-services \
-            --cluster amrize-ecs-cluster \
-            --services apache-service \
+            --cluster cluster-backend-holcim-images \
+            --services ui \
             --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition}' \
             --output table
 
@@ -153,45 +195,68 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
-      - name: 🌐 Get ALB URL and Test Application
+      - name: 🌐 Get Service URL and Test Application
         run: |
-          echo "🔍 Getting ALB URL..."
+          echo "🔍 Getting ECS service endpoint..."
           
-          # Get ALB DNS name
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names amrize-apache-alb \
-            --query 'LoadBalancers[0].DNSName' \
-            --output text 2>/dev/null || echo "")
+          # Get target group ARN from service
+          TG_ARN=$(aws ecs describe-services \
+            --cluster cluster-backend-holcim-images \
+            --services ui \
+            --query 'services[0].loadBalancers[0].targetGroupArn' \
+            --output text)
           
-          if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
-            ALB_URL="http://$ALB_DNS"
-            echo "🌐 Testing application at: $ALB_URL"
+          if [ "$TG_ARN" != "None" ] && [ -n "$TG_ARN" ]; then
+            echo "🎯 Target Group: $TG_ARN"
             
-            # Test endpoint with retries
-            max_attempts=20
-            attempt=0
+            # Get load balancer from target group
+            LB_ARN=$(aws elbv2 describe-target-groups \
+              --target-group-arns "$TG_ARN" \
+              --query 'TargetGroups[0].LoadBalancerArns[0]' \
+              --output text 2>/dev/null || echo "")
             
-            while [ $attempt -lt $max_attempts ]; do
-              attempt=$((attempt + 1))
-              echo "🔄 Testing endpoint (attempt $attempt/$max_attempts)..."
+            if [ -n "$LB_ARN" ] && [ "$LB_ARN" != "None" ]; then
+              # Get ALB DNS name
+              ALB_DNS=$(aws elbv2 describe-load-balancers \
+                --load-balancer-arns "$LB_ARN" \
+                --query 'LoadBalancers[0].DNSName' \
+                --output text 2>/dev/null || echo "")
               
-              if curl -f -s "$ALB_URL" > /dev/null; then
-                echo "✅ Application is responding successfully!"
-                echo "📄 Application content:"
-                curl -s "$ALB_URL" | head -10
-                break
+              if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+                ALB_URL="http://$ALB_DNS"
+                echo "🌐 Testing application at: $ALB_URL"
+                
+                # Test endpoint with retries
+                max_attempts=10
+                attempt=0
+                
+                while [ $attempt -lt $max_attempts ]; do
+                  attempt=$((attempt + 1))
+                  echo "🔄 Testing endpoint (attempt $attempt/$max_attempts)..."
+                  
+                  if curl -f -s "$ALB_URL" > /dev/null; then
+                    echo "✅ Application is responding successfully!"
+                    echo "📄 Application content:"
+                    curl -s "$ALB_URL" | head -10
+                    break
+                  else
+                    echo "⏳ Waiting for application to be ready..."
+                    sleep 15
+                  fi
+                done
               else
-                echo "⏳ Waiting for application to be ready..."
-                sleep 15
+                echo "⚠️ Load balancer DNS not found"
               fi
-            done
-            
+            else
+              echo "⚠️ Load balancer not found for target group"
+            fi
           else
-            echo "⚠️ ALB not found or not accessible, checking ECS service health instead..."
+            echo "⚠️ No load balancer configured for this service"
+            echo "✅ Checking ECS service health instead..."
             aws ecs describe-services \
-              --cluster amrize-ecs-cluster \
-              --services apache-service \
-              --query 'services[0].{Status:status,HealthyTargets:runningCount}' \
+              --cluster cluster-backend-holcim-images \
+              --services ui \
+              --query 'services[0].{Status:status,HealthyTargets:runningCount,DesiredCount:desiredCount}' \
               --output table
           fi
 
@@ -203,8 +268,8 @@ jobs:
           echo ""
           echo "📦 Deployed Image: ${{ needs.docker_build_push.outputs.image_uri }}"
           echo "🏷️ Image Tag: ${{ needs.docker_build_push.outputs.image_tag }}"
-          echo "🔄 ECS Service: apache-service updated"
-          echo "🏗️ ECS Cluster: amrize-ecs-cluster"
+          echo "🔄 ECS Service: ui updated"
+          echo "🏗️ ECS Cluster: cluster-backend-holcim-images"
           echo ""
           echo "✅ Updated HTML content deployed to production!"
           echo "🚀 Application is ready to serve traffic!"
